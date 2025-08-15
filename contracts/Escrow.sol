@@ -30,7 +30,7 @@ contract Escrow {
      * @param _freelancer Address of the freelancer who will receive the funds
      */
     constructor(address _freelancer) payable {
-        if (msg.value <= 0) {
+        if (msg.value == 0) {
             revert Escrow__NoEtherSent();
         }
         if (_freelancer == address(0)) {

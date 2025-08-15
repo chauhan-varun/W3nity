@@ -417,119 +417,82 @@ const ProposalPage = () => {
     if (id) fetchGig();
   }, [id]);
 
-  // const handleRelease = async () => {
-  //   if (!signer) {
-  //     setTxStatus("⚠ Please connect your wallet to proceed.");
-  //     return;
-  //   }
-  //   try {
-  //     setIsReleasing(true);
-  //     const contract = getEscrowInstance(signer, ESCROW_CONTRACT_ADDRESS);
-  //     const tx = await contract.releaseFunds();
-  //     await tx.wait();
-  //     setTxStatus("✅ Funds released successfully!");
-  //   } catch (err: any) {
-  //     console.error("Release error:", err);
-  //     const code = err.code || err.info?.error?.code;
-  //     const message =
-  //       err.reason || err.shortMessage || err.message || "Unknown error.";
-  //     setTxStatus(code === 4001 ? "Transaction rejected by user." : `Error: ${message}`);
-  //   } finally {
-  //     setIsReleasing(false);
-  //   }
-  // };
-
-  // const handleRelease = async () => {
-  //   if (!signer) {
-  //     setTxStatus("⚠ Please connect your wallet to proceed.");
-  //     return;
-  //   }
-  
-  //   try {
-  //     setIsReleasing(true);
-  
-  //     // Get the address of the connected wallet
-  //     const signerAddress = await signer.getAddress();
-  
-  //     // Initialize the escrow contract instance
-  //     const contract = getEscrowInstance(signer, ESCROW_CONTRACT_ADDRESS);
-  
-  //     // Retrieve the payer's address from the contract
-  //     const payer: string = await contract.payer();
-  
-  //     // Check if the connected wallet is the payer
-  //     if (signerAddress.toLowerCase() !== payer.toLowerCase()) {
-  //       setTxStatus("❌ Only the client who funded the escrow can release funds.");
-  //       setIsReleasing(false);
-  //       return;
-  //     }
-  
-  //     // Proceed to release funds
-  //     const tx = await contract.releaseFunds();
-  //     await tx.wait();
-  
-  //     setTxStatus("✅ Funds released successfully!");
-  //   } catch (err: any) {
-  //     console.error("Release error:", err);
-  //     const code = err.code || err.info?.error?.code;
-  //     const message =
-  //       err.reason || err.shortMessage || err.message || "Unknown error.";
-  //     setTxStatus(
-  //       code === 4001
-  //         ? "Transaction rejected by user."
-  //         : `Error: ${message}`
-  //     );
-  //   } finally {
-  //     setIsReleasing(false);
-  //   }
-  // };
-  
-  
-  
   const handleRelease = async () => {
     if (!signer) {
       setTxStatus("⚠ Please connect your wallet to proceed.");
       return;
     }
-  
+
     try {
       setIsReleasing(true);
-  
+
       const contract = getEscrowInstance(signer, ESCROW_CONTRACT_ADDRESS);
-  
+
       if (!contract) {
         setTxStatus("❌ Contract instance not found.");
         setIsReleasing(false);
         return;
       }
-  
+
+      // Get current wallet address to verify it's the client
+      const currentAddress = await signer.getAddress();
+      const clientAddress = await contract.i_client();
+
+      if (currentAddress.toLowerCase() !== clientAddress.toLowerCase()) {
+        setTxStatus("❌ Only the client who funded the escrow can release funds.");
+        setIsReleasing(false);
+        return;
+      }
+
+      // Check if funds are already released
+      const isComplete = await contract.s_isComplete();
+      if (isComplete) {
+        setTxStatus("❌ Funds have already been released.");
+        setIsReleasing(false);
+        return;
+      }
+
       // Call releaseFunds on the contract
       const tx = await contract.releaseFunds();
+      setTxStatus("⏳ Transaction submitted, waiting for confirmation...");
       await tx.wait();
-  
+
       setTxStatus("✅ Funds released successfully!");
     } catch (err: any) {
       console.error("Release error:", err);
-  
-      // Ethers errors may have different formats, so we check multiple fields safely
+
+      // Handle custom errors from the refactored contract
+      let errorMessage = "Unknown error occurred";
+
+      if (err.reason) {
+        if (err.reason.includes("Escrow__NotClient")) {
+          errorMessage = "Only the client can release funds";
+        } else if (err.reason.includes("Escrow__FundsAlreadyReleased")) {
+          errorMessage = "Funds have already been released";
+        } else if (err.reason.includes("Escrow__InsufficientBalance")) {
+          errorMessage = "Insufficient contract balance";
+        } else if (err.reason.includes("Escrow__EtherTransferFailed")) {
+          errorMessage = "Transfer to freelancer failed";
+        } else {
+          errorMessage = err.reason;
+        }
+      } else if (err.shortMessage) {
+        errorMessage = err.shortMessage;
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+
       const code = err?.code || err?.error?.code || err?.info?.error?.code;
-      const message =
-        err?.reason ||
-        err?.shortMessage ||
-        err?.message ||
-        "Unknown error.";
-  
       setTxStatus(
         code === 4001
           ? "Transaction rejected by user."
-          : `❌ Failed to release funds: ${message}`
+          : `❌ Failed to release funds: ${errorMessage}`
       );
     } finally {
       setIsReleasing(false);
     }
   };
-  
-  
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -552,31 +515,53 @@ const ProposalPage = () => {
     let escrowAddress = "";
 
     try {
-      const signerAddress = await signer.getAddress();
-    
+      // Get freelancer address (for demo, using a placeholder)
+      // In a real app, this would be the freelancer's address from the proposal
+      const freelancerAddress = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"; // Replace with actual freelancer address
+
       const factory = new ethers.ContractFactory(
         EscrowABI.abi,
         EscrowABI.bytecode,
         signer
       );
-    
+
       const ethValue = ethers.parseEther(proposedBudget.toString());
-    
-      const contract = await factory.deploy(signerAddress, { value: ethValue });
-    
-     
+
+      // Deploy escrow contract with the freelancer's address, funded by the client (signer)
+      // The signer here is assumed to be the client, who should be connected and have sufficient ETH
+      const contract = await factory.deploy(freelancerAddress, { value: ethValue });
+
       const receipt = await contract.waitForDeployment();
-    
-       escrowAddress = await contract.getAddress();
-    
+      escrowAddress = await contract.getAddress();
+
       console.log("✅ Escrow deployed at:", escrowAddress);
+
+      toast({
+        title: "Contract Deployed",
+        description: `Escrow created at ${escrowAddress}`,
+      });
     } catch (err: any) {
-      toast({ title: "Contract Deployment Failed", description: err.message });
+      console.error("Contract deployment error:", err);
+
+      let errorMessage = "Failed to deploy escrow contract";
+
+      if (err.reason) {
+        if (err.reason.includes("Escrow__NoEtherSent")) {
+          errorMessage = "Must send ETH when creating escrow";
+        } else if (err.reason.includes("Escrow__InvalidFreelancerAddress")) {
+          errorMessage = "Invalid freelancer address";
+        } else {
+          errorMessage = err.reason;
+        }
+      }
+
+      toast({
+        title: "Contract Deployment Failed",
+        description: errorMessage
+      });
       setIsSubmitting(false);
       return;
     }
-    
-    
 
     try {
       await axios.post(`${import.meta.env.VITE_API_URL}/api/proposals`, {
@@ -775,74 +760,74 @@ const ProposalPage = () => {
         </div>
 
         <div className="space-y-6">
-            {/* Tips Card */}
-            <Card className="glass-effect border-blue-200 bg-blue-50/50">
-              <CardHeader>
-                <CardTitle className="text-lg text-blue-800">💡 Proposal Tips</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm text-blue-700 space-y-3">
-                <p>• Personalize your message to the specific project</p>
-                <p>• Highlight relevant experience and portfolio pieces</p>
-                <p>• Be realistic with your timeline and budget</p>
-                <p>• Ask clarifying questions to show engagement</p>
-                <p>• Proofread before submitting</p>
-              </CardContent>
-            </Card>
+          {/* Tips Card */}
+          <Card className="glass-effect border-blue-200 bg-blue-50/50">
+            <CardHeader>
+              <CardTitle className="text-lg text-blue-800">💡 Proposal Tips</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-blue-700 space-y-3">
+              <p>• Personalize your message to the specific project</p>
+              <p>• Highlight relevant experience and portfolio pieces</p>
+              <p>• Be realistic with your timeline and budget</p>
+              <p>• Ask clarifying questions to show engagement</p>
+              <p>• Proofread before submitting</p>
+            </CardContent>
+          </Card>
 
-            {/* Project Summary */}
-            <Card className="glass-effect">
-              <CardHeader>
-                <CardTitle className="text-lg">Project Summary</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <div>
-                  <p className="font-medium text-muted-foreground">Client Budget</p>
-                  <p className="font-semibold">${gig.minBudget} - ${gig.maxBudget}</p>
+          {/* Project Summary */}
+          <Card className="glass-effect">
+            <CardHeader>
+              <CardTitle className="text-lg">Project Summary</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div>
+                <p className="font-medium text-muted-foreground">Client Budget</p>
+                <p className="font-semibold">${gig.minBudget} - ${gig.maxBudget}</p>
+              </div>
+              <div>
+                <p className="font-medium text-muted-foreground">Required Skills</p>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {gig.skills.map(skill => (
+                    <Badge key={skill} variant="outline" className="text-xs">
+                      {skill}
+                    </Badge>
+                  ))}
                 </div>
-                <div>
-                  <p className="font-medium text-muted-foreground">Required Skills</p>
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {gig.skills.map(skill => (
-                      <Badge key={skill} variant="outline" className="text-xs">
-                        {skill}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="font-medium text-muted-foreground">Category</p>
-                  <p className="capitalize">{gig.category.replace('-', ' ')}</p>
-                </div>
-              </CardContent>
-            </Card>
+              </div>
+              <div>
+                <p className="font-medium text-muted-foreground">Category</p>
+                <p className="capitalize">{gig.category.replace('-', ' ')}</p>
+              </div>
+            </CardContent>
+          </Card>
 
-            {/* Form Validation */}
-            <Card className="glass-effect">
-              <CardHeader>
-                <CardTitle className="text-lg">Checklist</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className={`flex items-center gap-2 ${coverLetter.trim() ? 'text-green-600' : 'text-muted-foreground'}`}>
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${coverLetter.trim() ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
-                    {coverLetter.trim() && <span className="text-white text-xs">✓</span>}
-                  </div>
-                  Cover letter written
+          {/* Form Validation */}
+          <Card className="glass-effect">
+            <CardHeader>
+              <CardTitle className="text-lg">Checklist</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className={`flex items-center gap-2 ${coverLetter.trim() ? 'text-green-600' : 'text-muted-foreground'}`}>
+                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${coverLetter.trim() ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
+                  {coverLetter.trim() && <span className="text-white text-xs">✓</span>}
                 </div>
-                <div className={`flex items-center gap-2 ${proposedBudget ? 'text-green-600' : 'text-muted-foreground'}`}>
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${proposedBudget ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
-                    {proposedBudget && <span className="text-white text-xs">✓</span>}
-                  </div>
-                  Budget proposed
+                Cover letter written
+              </div>
+              <div className={`flex items-center gap-2 ${proposedBudget ? 'text-green-600' : 'text-muted-foreground'}`}>
+                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${proposedBudget ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
+                  {proposedBudget && <span className="text-white text-xs">✓</span>}
                 </div>
-                <div className={`flex items-center gap-2 ${deliveryTime ? 'text-green-600' : 'text-muted-foreground'}`}>
-                  <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${deliveryTime ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
-                    {deliveryTime && <span className="text-white text-xs">✓</span>}
-                  </div>
-                  Delivery time set
+                Budget proposed
+              </div>
+              <div className={`flex items-center gap-2 ${deliveryTime ? 'text-green-600' : 'text-muted-foreground'}`}>
+                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${deliveryTime ? 'bg-green-600 border-green-600' : 'border-muted-foreground'}`}>
+                  {deliveryTime && <span className="text-white text-xs">✓</span>}
                 </div>
-              </CardContent>
-            </Card>
-          </div>
+                Delivery time set
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
